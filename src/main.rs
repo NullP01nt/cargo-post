@@ -7,6 +7,8 @@ use std::{
     process::{self, Command},
 };
 
+use sha2::{Digest, Sha256};
+
 static HELP: &str = include_str!("help.txt");
 
 /// The required post_build script call
@@ -117,6 +119,7 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
             }
         }
     };
+    let package_hash = format!("{:x}", Sha256::digest(&package.id.repr));
 
     let manifest_path = manifest_path
         .map(PathBuf::from)
@@ -197,6 +200,7 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     let build_script_manifest_path = build_script_manifest_dir.join("Cargo.toml");
     let build_script_manifest_content = format!(
         include_str!("post_build_script_manifest.toml"),
+        hash = package_hash,
         file_name = toml::Value::String(post_build_script_path.display().to_string()),
         dependencies = dependencies_string,
     );
