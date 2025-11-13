@@ -194,7 +194,7 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
         .target_directory
         .canonicalize()
         .expect("target directory does not exist")
-        .join(&format!("post_build_script-{package_hash}"));
+        .join(format!("post_build_script-{package_hash}"));
     fs::create_dir_all(&build_script_manifest_dir)
         .expect("failed to create build script manifest dir");
     let build_script_manifest_path = build_script_manifest_dir.join("Cargo.toml");
