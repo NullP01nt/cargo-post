@@ -1,5 +1,5 @@
 [package]
-name = "post-build-script"
+name = "post-build-script-{hash}"
 version = "0.1.0"
 edition = "2018"
 

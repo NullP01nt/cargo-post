@@ -7,6 +7,8 @@ use std::{
     process::{self, Command},
 };
 
+use sha2::{Digest, Sha256};
+
 static HELP: &str = include_str!("help.txt");
 
 /// The required post_build script call
@@ -76,6 +78,9 @@ fn main() {
 }
 
 fn run_post_build_script() -> Option<process::ExitStatus> {
+    let rustc_metadata =
+        rustc_version::version_meta().expect("cannot query rustc version metadata");
+
     let mut cmd = cargo_metadata::MetadataCommand::new();
     cmd.no_deps();
     let manifest_path = {
@@ -114,6 +119,7 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
             }
         }
     };
+    let package_hash = format!("{:x}", Sha256::digest(&package.id.repr));
 
     let manifest_path = manifest_path
         .map(PathBuf::from)
@@ -188,25 +194,42 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
         .target_directory
         .canonicalize()
         .expect("target directory does not exist")
-        .join("post_build_script_manifest");
+        .join(format!("post_build_script-{package_hash}"));
     fs::create_dir_all(&build_script_manifest_dir)
         .expect("failed to create build script manifest dir");
     let build_script_manifest_path = build_script_manifest_dir.join("Cargo.toml");
     let build_script_manifest_content = format!(
         include_str!("post_build_script_manifest.toml"),
+        hash = package_hash,
         file_name = toml::Value::String(post_build_script_path.display().to_string()),
         dependencies = dependencies_string,
     );
     fs::write(&build_script_manifest_path, build_script_manifest_content)
         .expect("Failed to write post build script manifest");
 
+    // Link the Cargo.lock to the post_build.lock if it exists
+    let post_build_lock_path = post_build_script_path.with_extension("lock");
+    let build_script_lock_path = build_script_manifest_dir.join("Cargo.lock");
+    let lock_file_present = post_build_lock_path.is_file();
+    if lock_file_present {
+        let _ = fs::remove_file(&build_script_lock_path);
+        fs::hard_link(&post_build_lock_path, &build_script_lock_path)
+            .expect("Failed to link to post build lock");
+    }
+
     // gather arguments for post build script
     let target_path = {
+        // Target resolution chooses the first available out of the following:
+        // - target CLI flag
+        // - $CARGO_BUILD_TARGET
+        // - build.target in a .cargo/config file
         let mut args = env::args().skip_while(|val| !val.starts_with("--target"));
         match args.next() {
             Some(ref p) if p == "--target" => Some(args.next().expect("no target after --target")),
             Some(p) => Some(p.trim_start_matches("--target=").to_owned()),
-            None => None,
+            None => env::var("CARGO_BUILD_TARGET")
+                .ok()
+                .or(find_cargo_config_target(manifest_dir)),
         }
     };
     let target_triple = {
@@ -242,18 +265,27 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     cmd.arg("build");
     cmd.arg("--manifest-path");
     cmd.arg(build_script_manifest_path.as_os_str());
+    // Explicitly build the post-build-script for the host target
+    // since there are subtle ways detection could go wrong.
+    cmd.args(["--target", &rustc_metadata.host]);
+    if lock_file_present && env::args().any(|arg| arg == "--locked") {
+        cmd.arg("--locked");
+    }
+
     let exit_status = cmd.status().expect("Failed to run post build script");
     if !exit_status.success() {
         process::exit(exit_status.code().unwrap_or(1));
     }
 
     // run post build script
-    let mut cmd = Command::new(
-        build_script_manifest_dir
-            .join("target")
-            .join("debug")
-            .join("post-build-script"),
-    );
+    let cmd_path = {
+        let mut path = build_script_manifest_dir.join("target");
+        path.push(&rustc_metadata.host);
+        path.push("debug");
+        path.push("post-build-script");
+        path
+    };
+    let mut cmd = Command::new(cmd_path);
     cmd.env("CRATE_MANIFEST_DIR", manifest_dir.as_os_str());
     cmd.env(
         "CRATE_MANIFEST_PATH",
@@ -265,5 +297,72 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     cmd.env("CRATE_TARGET_TRIPLE", target_triple.unwrap_or_default());
     cmd.env("CRATE_PROFILE", profile);
     cmd.env("CRATE_BUILD_COMMAND", build_command);
-    Some(cmd.status().expect("Failed to run post build script"))
+    let result = Some(cmd.status().expect("Failed to run post build script"));
+
+    // Link the lock file next to the post_build.rs if it does not exist yet
+    if !lock_file_present {
+        fs::hard_link(&build_script_lock_path, &post_build_lock_path)
+            .expect("Failed to link lock file");
+    }
+
+    result
+}
+
+fn find_cargo_config_target(path: &Path) -> Option<String> {
+    // Cargo config path resolution works in accordance with:
+    // https://doc.rust-lang.org/cargo/reference/config.html#hierarchical-structure
+
+    // Set up a path for $CARGO_HOME
+    let cargo_home = env::var("CARGO_HOME").unwrap();
+    let cargo_home = Path::new(&cargo_home);
+    // Depending on the path we enter this function with,
+    // allocate a list of paths to check in order
+    let paths = if path.eq(cargo_home) {
+        vec![path.join("config.toml")]
+    } else {
+        vec![path.join(".cargo/config"), path.join(".cargo/config.toml")]
+    };
+    // First attempt to find and parse variants for current given path
+    for config_path in paths {
+        if config_path.exists() {
+            let target = parse_build_target(&config_path);
+            if target.is_some() {
+                return target;
+            }
+        }
+    }
+    // We haven't found any config for $CARGO_HOME/config.toml;
+    // stop recursing
+    if path.eq(cargo_home) {
+        return None;
+    }
+
+    if let Some(p) = path.parent() {
+        // Our current path still has a parent, recurse into it
+        find_cargo_config_target(p)
+    } else {
+        if path.ne(cargo_home) {
+            // Our current path is effectively at the root of the volume;
+            // attempt to find configuration at $CARGO_HOME/config.toml
+            return find_cargo_config_target(cargo_home);
+        }
+        // All stop conditions have been met and no target has been found
+        None
+    }
+}
+
+fn parse_build_target(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).expect("cannot read cargo config file");
+    let parsed: toml::Table = content.parse().expect("cannot parse cargo config toml");
+    if let Some(build) = parsed.get("build") {
+        if let Some(target) = build.get("target") {
+            return Some(
+                target
+                    .as_str()
+                    .expect("build.target should be a string")
+                    .to_string(),
+            );
+        }
+    }
+    None
 }
