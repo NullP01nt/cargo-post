@@ -207,6 +207,16 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     fs::write(&build_script_manifest_path, build_script_manifest_content)
         .expect("Failed to write post build script manifest");
 
+    // Link the Cargo.lock to the post_build.lock if it exists
+    let post_build_lock_path = post_build_script_path.with_extension("lock");
+    let build_script_lock_path = build_script_manifest_dir.join("Cargo.lock");
+    let lock_file_present = post_build_lock_path.is_file();
+    if lock_file_present {
+        let _ = fs::remove_file(&build_script_lock_path);
+        fs::hard_link(&post_build_lock_path, &build_script_lock_path)
+            .expect("Failed to link to post build lock");
+    }
+
     // gather arguments for post build script
     let target_path = {
         // Target resolution chooses the first available out of the following:
@@ -258,6 +268,9 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     // Explicitly build the post-build-script for the host target
     // since there are subtle ways detection could go wrong.
     cmd.args(["--target", &rustc_metadata.host]);
+    if lock_file_present && env::args().any(|arg| arg == "--locked") {
+        cmd.arg("--locked");
+    }
 
     let exit_status = cmd.status().expect("Failed to run post build script");
     if !exit_status.success() {
@@ -284,7 +297,15 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
     cmd.env("CRATE_TARGET_TRIPLE", target_triple.unwrap_or_default());
     cmd.env("CRATE_PROFILE", profile);
     cmd.env("CRATE_BUILD_COMMAND", build_command);
-    Some(cmd.status().expect("Failed to run post build script"))
+    let result = Some(cmd.status().expect("Failed to run post build script"));
+
+    // Link the lock file next to the post_build.rs if it does not exist yet
+    if !lock_file_present {
+        fs::hard_link(&build_script_lock_path, &post_build_lock_path)
+            .expect("Failed to link lock file");
+    }
+
+    result
 }
 
 fn find_cargo_config_target(path: &Path) -> Option<String> {
