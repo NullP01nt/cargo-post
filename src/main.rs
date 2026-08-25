@@ -7,8 +7,6 @@ use std::{
     process::{self, Command},
 };
 
-use sha2::{Digest, Sha256};
-
 static HELP: &str = include_str!("help.txt");
 
 /// The required post_build script call
