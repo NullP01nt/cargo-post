@@ -119,7 +119,7 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
             }
         }
     };
-    let package_hash = format!("{:x}", Sha256::digest(&package.id.repr));
+    let package_name = package.name.to_owned();
 
     let manifest_path = manifest_path
         .map(PathBuf::from)
@@ -194,13 +194,13 @@ fn run_post_build_script() -> Option<process::ExitStatus> {
         .target_directory
         .canonicalize()
         .expect("target directory does not exist")
-        .join(format!("post_build_script-{package_hash}"));
+        .join(format!("post_build_script-{package_name}"));
     fs::create_dir_all(&build_script_manifest_dir)
         .expect("failed to create build script manifest dir");
     let build_script_manifest_path = build_script_manifest_dir.join("Cargo.toml");
     let build_script_manifest_content = format!(
         include_str!("post_build_script_manifest.toml"),
-        hash = package_hash,
+        name = package_name,
         file_name = toml::Value::String(post_build_script_path.display().to_string()),
         dependencies = dependencies_string,
     );
