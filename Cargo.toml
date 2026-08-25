@@ -9,18 +9,20 @@ license = "MIT/Apache-2.0"
 documentation = "https://docs.rs/crate/cargo-post/"
 repository = "https://github.com/phil-opp/cargo-post"
 
-[dependencies]
-toml = "0.9.8"
-home = "0.5.11"
-rustc_version="0.4.1"
-sha2 = "0.10.9"
-
-[dependencies.cargo_metadata]
-version = "0.23.0"
-default-features = false
-
 [package.metadata.release]
 pre-release-replacements = [
-    { file = "Changelog.md", search = "## Unreleased", replace = "## Unreleased\n\n# {{version}} – {{date}}", exactly = 1 },
+  {
+    file = "Changelog.md",
+    search = "## Unreleased",
+    replace = "## Unreleased\n\n# {{version}} – {{date}}",
+    exactly = 1
+  },
 ]
 pre-release-commit-message = "Release version {{version}}"
+
+[dependencies]
+cargo_metadata = { version = "0.23.0", default-features = false }
+home = "0.5.11"
+rustc_version = "0.4.1"
+sha2 = "0.10.9"
+toml = "0.9.8"
